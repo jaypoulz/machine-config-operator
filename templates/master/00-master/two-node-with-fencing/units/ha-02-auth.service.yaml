@@ -1,0 +1,19 @@
+name: ha-02-auth.service
+enabled: true
+contents: |
+  [Unit]
+  Description=Auth nodes
+  After=ha-01-enable-services.service
+  Wants=pcsd.service
+  
+  [Service]
+  Type=oneshot
+  ExecStart=/bin/bash -c "/usr/sbin/pcs pcsd accept_token /var/lib/pcsd/token"
+  ExecStartPost=/usr/local/bin/pcsd-auth.sh
+  RemainAfterExit=yes
+  Restart=on-failure
+  RestartSec=10
+  StartLimitBurst=3
+
+  [Install]
+  WantedBy=multi-user.target

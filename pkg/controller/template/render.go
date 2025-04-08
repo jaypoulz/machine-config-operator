@@ -13,6 +13,7 @@ import (
 	"strings"
 	"text/template"
 
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/klog/v2"
 
 	configv1 "github.com/openshift/api/config/v1"
@@ -376,6 +377,7 @@ func renderTemplate(config RenderConfig, path string, b []byte) ([]byte, error) 
 	funcs["cloudPlatformAPILoadBalancerIPs"] = cloudPlatformAPILoadBalancerIPs
 	funcs["cloudPlatformIngressLoadBalancerIPs"] = cloudPlatformIngressLoadBalancerIPs
 	funcs["join"] = strings.Join
+	funcs["uuidV4"] = uuid.NewUUID
 	tmpl, err := template.New(path).Funcs(funcs).Parse(string(b))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse template %s: %w", path, err)
