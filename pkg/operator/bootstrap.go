@@ -14,8 +14,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 
+	"github.com/google/uuid"
+
 	ctrlcommon "github.com/openshift/machine-config-operator/pkg/controller/common"
 	templatectrl "github.com/openshift/machine-config-operator/pkg/controller/template"
+)
+
+const (
+	tnf = "two-node-with-fencing"
 )
 
 type manifest struct {
@@ -186,6 +192,19 @@ func RenderBootstrap(
 			name:     "manifests/arbiter.machineconfigpool.yaml",
 			filename: "bootstrap/manifests/arbiter.machineconfigpool.yaml",
 		})
+	}
+
+	if infra.Status.ControlPlaneTopology == configv1.DualReplicaTopologyMode {
+		uuid, err := uuid.NewUUID()
+		if err != nil {
+			fmt.Println(err)
+		} else {
+			config.PcsdToken = uuid.String()
+			manifests = append(manifests, manifest{
+				name:     filepath.Join("manifests", tnf, "pcsd-token.machineconfig.yaml.tmpl"),
+				filename: "manifests/99_openshift-machineconfig_99-master-pcsd-token.yaml",
+			})
+		}
 	}
 
 	manifests = appendManifestsByPlatform(manifests, *infra)

@@ -43,6 +43,7 @@ type renderConfig struct {
 	PointerConfig          string
 	TLSMinVersion          string
 	TLSCipherSuites        []string
+	PcsdToken              string
 }
 
 type assetRenderer struct {

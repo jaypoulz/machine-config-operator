@@ -20,6 +20,8 @@ import (
 	mcfglistersv1 "github.com/openshift/client-go/machineconfiguration/listers/machineconfiguration/v1"
 	mcoResourceApply "github.com/openshift/machine-config-operator/lib/resourceapply"
 	ctrlcommon "github.com/openshift/machine-config-operator/pkg/controller/common"
+	"github.com/openshift/machine-config-operator/pkg/helpers"
+	corelisterv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
 
 	configv1 "github.com/openshift/api/config/v1"
@@ -65,12 +67,14 @@ type Controller struct {
 
 	ccLister mcfglistersv1.ControllerConfigLister
 	mcLister mcfglistersv1.MachineConfigLister
+	nodeLister corelisterv1.NodeLister
 
 	apiserverLister       configlistersv1.APIServerLister
 	apiserverListerSynced cache.InformerSynced
 
 	ccListerSynced        cache.InformerSynced
 	mcListerSynced        cache.InformerSynced
+	nodeListerSynced      cache.InformerSynced
 	secretsInformerSynced cache.InformerSynced
 
 	queue workqueue.TypedRateLimitingInterface[string]
@@ -81,6 +85,7 @@ func New(
 	templatesDir string,
 	ccInformer mcfginformersv1.ControllerConfigInformer,
 	mcInformer mcfginformersv1.MachineConfigInformer,
+	nodeInformer coreinformersv1.NodeInformer,
 	secretsInformer coreinformersv1.SecretInformer,
 	apiserverInformer configinformersv1.APIServerInformer,
 	kubeClient clientset.Interface,
@@ -130,8 +135,10 @@ func New(
 
 	ctrl.ccLister = ccInformer.Lister()
 	ctrl.mcLister = mcInformer.Lister()
+	ctrl.nodeLister = nodeInformer.Lister()
 	ctrl.ccListerSynced = ccInformer.Informer().HasSynced
 	ctrl.mcListerSynced = mcInformer.Informer().HasSynced
+	ctrl.nodeListerSynced = nodeInformer.Informer().HasSynced
 	ctrl.secretsInformerSynced = secretsInformer.Informer().HasSynced
 
 	ctrl.apiserverLister = apiserverInformer.Lister()
@@ -287,7 +294,7 @@ func (ctrl *Controller) Run(workers int, stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()
 	defer ctrl.queue.ShutDown()
 
-	if !cache.WaitForCacheSync(stopCh, ctrl.ccListerSynced, ctrl.mcListerSynced, ctrl.secretsInformerSynced) {
+	if !cache.WaitForCacheSync(stopCh, ctrl.ccListerSynced, ctrl.mcListerSynced, ctrl.nodeListerSynced, ctrl.secretsInformerSynced) {
 		return
 	}
 
@@ -633,7 +640,7 @@ func (ctrl *Controller) syncControllerConfig(key string) error {
 		return ctrl.syncFailingStatus(cfg, err)
 	}
 
-	mcs, err := getMachineConfigsForControllerConfig(ctrl.templatesDir, cfg, clusterPullSecretRaw, apiServer)
+	mcs, err := getMachineConfigsForControllerConfig(ctrl.templatesDir, cfg, clusterPullSecretRaw, apiServer, ctrl.nodeLister)
 	if err != nil {
 		return ctrl.syncFailingStatus(cfg, err)
 	}
@@ -652,18 +659,53 @@ func (ctrl *Controller) syncControllerConfig(key string) error {
 	return ctrl.syncCompletedStatus(cfg)
 }
 
-func getMachineConfigsForControllerConfig(templatesDir string, config *mcfgv1.ControllerConfig, clusterPullSecretRaw []byte, apiServer *configv1.APIServer) ([]*mcfgv1.MachineConfig, error) {
+func getMachineConfigsForControllerConfig(templatesDir string, config *mcfgv1.ControllerConfig, clusterPullSecretRaw []byte, apiServer *configv1.APIServer, nodeLister corelisterv1.NodeLister) ([]*mcfgv1.MachineConfig, error) {
 	buf := &bytes.Buffer{}
 	if err := json.Compact(buf, clusterPullSecretRaw); err != nil {
 		return nil, fmt.Errorf("couldn't compact pullsecret %q: %w", string(clusterPullSecretRaw), err)
 	}
 	tlsMinVersion, tlsCipherSuites := ctrlcommon.GetSecurityProfileCiphersFromAPIServer(apiServer)
+
 	rc := &RenderConfig{
 		ControllerConfigSpec: &config.Spec,
 		PullSecret:           string(buf.Bytes()),
 		TLSMinVersion:        tlsMinVersion,
 		TLSCipherSuites:      tlsCipherSuites,
 	}
+
+	if nodeLister != nil && rc.Infra.Status.ControlPlaneTopology == configv1.DualReplicaTopologyMode {
+		corev1CPNodes, err := helpers.GetControlPlaneNodes(nodeLister)
+		if err != nil {
+			return nil, err
+		}
+
+		var ctrlPlaneNodes []NodeInfo
+		for _, node := range corev1CPNodes {
+
+			var ctrlPlaneNode NodeInfo
+			for _, address := range node.Status.Addresses {
+				switch address.Type {
+				case "Hostname":
+					ctrlPlaneNode.Hostname = address.Address
+				case "InternalIP":
+					ctrlPlaneNode.InternalIP = address.Address
+				}
+			}
+
+			if ctrlPlaneNode.Hostname != "" && ctrlPlaneNode.InternalIP != "" {
+				ctrlPlaneNodes = append(ctrlPlaneNodes, ctrlPlaneNode)
+			}
+		}
+
+		if (len(ctrlPlaneNodes) != len(corev1CPNodes)) {
+			klog.Errorf("Failed to find InternalIPs and Hostnames for all control-plane nodes")
+		} else if len(ctrlPlaneNodes) != 2 {
+			klog.Errorf("Expecting exactly 2 control-plane nodes for DualReplica topology")
+		} else {
+			rc.CtrlPlaneNodes = ctrlPlaneNodes
+		}
+	}
+
 	mcs, err := generateTemplateMachineConfigs(rc, templatesDir)
 	if err != nil {
 		return nil, err
@@ -680,5 +722,5 @@ func getMachineConfigsForControllerConfig(templatesDir string, config *mcfgv1.Co
 
 // RunBootstrap runs the tempate controller in boostrap mode.
 func RunBootstrap(templatesDir string, config *mcfgv1.ControllerConfig, pullSecretRaw []byte, apiServer *configv1.APIServer) ([]*mcfgv1.MachineConfig, error) {
-	return getMachineConfigsForControllerConfig(templatesDir, config, pullSecretRaw, apiServer)
+	return getMachineConfigsForControllerConfig(templatesDir, config, pullSecretRaw, apiServer, nil)
 }

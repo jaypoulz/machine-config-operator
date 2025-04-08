@@ -85,6 +85,16 @@ func createPool(cs *framework.ClientSet, poolName string) (*mcfgv1.MachineConfig
 	return cs.MachineConfigPools().Get(context.TODO(), poolName, metav1.GetOptions{})
 }
 
+func getControlPlaneNodes(cs *framework.ClientSet) (*corev1.NodeList, error) {
+	nodes, err := cs.CoreV1Interface.Nodes().List(context.TODO(), metav1.ListOptions{LabelSelector: ctrlcommon.MasterLabel})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return nodes, nil
+}
+
 func teardownPool(cs *framework.ClientSet, mcp *mcfgv1.MachineConfigPool) error {
 	err := cs.MachineConfigPools().Delete(context.TODO(), mcp.Name, metav1.DeleteOptions{})
 	if apierrs.IsNotFound(err) {

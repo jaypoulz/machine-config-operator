@@ -219,3 +219,13 @@ func IsCoreOSNode(node *corev1.Node) bool {
 	}
 	return false
 }
+
+func GetControlPlaneNodes(nodeLister corev1listers.NodeLister) ([]*corev1.Node, error) {
+	nodes, err := nodeLister.List(labels.SelectorFromSet(labels.Set{ctrlcommon.MasterLabel: ""}))
+
+	if err != nil {
+		return nil, err
+	}
+
+	return nodes, nil
+}

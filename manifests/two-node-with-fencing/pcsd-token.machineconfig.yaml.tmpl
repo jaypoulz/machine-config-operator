@@ -1,0 +1,14 @@
+---
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: "master"
+  name: 99-master-pcsd-token
+storage:
+  files:
+  - mode: 0644
+    path: "/var/lib/pcsd/token"
+    contents:
+      inline: |
+        {{.PcsdToken}}

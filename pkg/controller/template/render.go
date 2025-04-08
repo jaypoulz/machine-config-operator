@@ -13,7 +13,6 @@ import (
 	"strings"
 	"text/template"
 
-	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/klog/v2"
 
 	configv1 "github.com/openshift/api/config/v1"
@@ -33,12 +32,20 @@ const (
 	defaultLBIPState   LoadBalancerIPState = "Default"
 )
 
+// Used to hold node names and internal IPs to initialize
+// pacemaker cluster via MachineConfig in Two-Node OpenShift with Fencing clusters
+type NodeInfo struct {
+	Hostname 	 string
+	InternalIP string
+}
+
 // RenderConfig is wrapper around ControllerConfigSpec.
 type RenderConfig struct {
 	*mcfgv1.ControllerConfigSpec
 	PullSecret      string
 	TLSMinVersion   string
 	TLSCipherSuites []string
+	CtrlPlaneNodes  []NodeInfo
 
 	// no need to set this, will be automatically configured
 	Constants map[string]string
@@ -51,7 +58,8 @@ const (
 	platformBase   = "_base"
 	platformOnPrem = "on-prem"
 	sno            = "sno"
-	tnf            = "two-node-with-fencing"
+	tnfTopology    = "two-node-with-fencing"
+	needsNodeInfo  = "needs-node-info"
 	masterRole     = "master"
 	workerRole     = "worker"
 	arbiterRole    = "arbiter"
@@ -236,8 +244,16 @@ func getPaths(config *RenderConfig, platformString string) []string {
 		platformBasedPaths = append(platformBasedPaths, sno)
 	}
 
+	// Two Node OpenShift with Fencing (TNF) has some configs that can only be populated
+	// once the controller is running
 	if hasControlPlaneTopology(config, configv1.DualReplicaTopologyMode) {
-		platformBasedPaths = append(platformBasedPaths, tnf)
+		platformBasedPaths = append(platformBasedPaths, tnfTopology)
+
+		// We only include these if the render config has looked up the entries we need
+		// This requires the controller to have a valid nodeLister
+		if len(config.CtrlPlaneNodes) == 2 {
+			platformBasedPaths = append(platformBasedPaths, filepath.Join(tnfTopology, needsNodeInfo))
+		}
 	}
 
 	return platformBasedPaths
@@ -377,7 +393,6 @@ func renderTemplate(config RenderConfig, path string, b []byte) ([]byte, error) 
 	funcs["cloudPlatformAPILoadBalancerIPs"] = cloudPlatformAPILoadBalancerIPs
 	funcs["cloudPlatformIngressLoadBalancerIPs"] = cloudPlatformIngressLoadBalancerIPs
 	funcs["join"] = strings.Join
-	funcs["uuidV4"] = uuid.NewUUID
 	tmpl, err := template.New(path).Funcs(funcs).Parse(string(b))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse template %s: %w", path, err)
